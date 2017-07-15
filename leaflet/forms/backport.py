@@ -63,6 +63,8 @@ class BaseGeometryWidget(Widget):
     """
     The base class for rich geometry widgets.
     Render a map using the WKT of the geometry.
+    Adapted from:
+    https://github.com/django/django/commit/a7975260b50282b934c78c8e51846d103636ba04
     """
     geom_type = 'GEOMETRY'
     map_srid = 4326
@@ -85,7 +87,9 @@ class BaseGeometryWidget(Widget):
 
     def deserialize(self, value):
         try:
-            return GEOSGeometry(value)
+            # To allow older versions of django-leaflet to work,
+            # self.map_srid is also returned (unlike the imported Django class)
+            return GEOSGeometry(value, self.map_srid)
         except (GEOSException, ValueError) as err:
             logger.error("Error creating geometry from value '%s' (%s)", value, err)
         return None
