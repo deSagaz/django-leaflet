@@ -2,15 +2,15 @@
 from __future__ import unicode_literals
 
 from django.contrib.admin import ModelAdmin
-from django.core.exceptions import ImproperlyConfigured
+from django.db import connection
 
 try:
     from djgeojson.fields import GeoJSONField
 except ImportError:
     GeoJSONField = type(object)
-try:
+if connection.features.gis_enabled:
     from django.contrib.gis.db.models import GeometryField
-except (ImportError, ImproperlyConfigured):
+else:
     # When GEOS is not installed
     GeometryField = type(object)
 

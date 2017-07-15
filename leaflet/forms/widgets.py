@@ -6,9 +6,11 @@ from django import get_version
 from django import forms
 from django.core import validators
 from django.template.defaultfilters import slugify
-try:
+from django.db import connection
+
+if connection.features.gis_enabled:
     from django.contrib.gis.forms.widgets import BaseGeometryWidget
-except ImportError:
+else:
     from .backport import BaseGeometryWidget
 
 from leaflet import app_settings, PLUGINS, PLUGIN_FORMS

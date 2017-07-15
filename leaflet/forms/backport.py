@@ -42,15 +42,19 @@ from django.utils import translation
 from django import forms
 from django.utils.translation import ugettext_lazy as _
 from django.core import validators
+from django.db import connection
 
-try:
+from distutils.version import LooseVersion
+from django import get_version
+
+if connection.features.gis_enabled:
     from django.contrib.gis.geos import GEOSGeometry
-except ImportError:
+else:
     from .nogeos import GEOSGeometry
 
-try:
+if connection.features.gis_enabled:
     from django.contrib.gis.geos import GEOSException
-except ImportError:
+else:
     from .nogeos import GEOSException
 
 logger = logging.getLogger('django.contrib.gis')
@@ -59,7 +63,7 @@ logger = logging.getLogger('django.contrib.gis')
 class BaseGeometryWidget(Widget):
     """
     The base class for rich geometry widgets.
-    Renders a map using the WKT of the geometry.
+    Render a map using the WKT of the geometry.
     """
     geom_type = 'GEOMETRY'
     map_srid = 4326
@@ -82,45 +86,80 @@ class BaseGeometryWidget(Widget):
 
     def deserialize(self, value):
         try:
-            return GEOSGeometry(value, self.map_srid)
+            return GEOSGeometry(value)
         except (GEOSException, ValueError) as err:
-            logger.error(
-                "Error creating geometry from value '%s' (%s)" % (value, err)
-            )
+            logger.error("Error creating geometry from value '%s' (%s)", value, err)
         return None
 
-    def render(self, name, value, attrs=None):
-        # If a string reaches here (via a validation error on another
-        # field) then just reconstruct the Geometry.
-        if isinstance(value, six.string_types):
-            value = self.deserialize(value)
+    if LooseVersion(get_version()) >= LooseVersion('1.11'):
+        def get_context(self, name, value, attrs):
+            logger.error("WAS HERE");
+            context = super().get_context(name, value, attrs)
+            # If a string reaches here (via a validation error on another
+            # field) then just reconstruct the Geometry.
+            if value and isinstance(value, str):
+                value = self.deserialize(value)
 
-        if isinstance(value, dict):
-            value = GEOSGeometry(json.dumps(value), srid=self.map_srid)
+            if value:
+                # Check that srid of value and map match
+                if value.srid and value.srid != self.map_srid:
+                    try:
+                        ogr = value.ogr
+                        ogr.transform(self.map_srid)
+                        value = ogr
+                    except gdal.GDALException as err:
+                        logger.error(
+                            "Error transforming geometry from srid '%s' to srid '%s' (%s)",
+                            value.srid, self.map_srid, err
+                        )
 
-        if value:
-            # Check that srid of value and map match
-            if value.srid != self.map_srid:
-                try:
-                    ogr = value.ogr
-                    ogr.transform(self.map_srid)
-                    value = ogr
-                except gdal.OGRException as err:
-                    logger.error(
-                        "Error transforming geometry from srid '%s' to srid "
-                        "'%s' (%s)" % (value.srid, self.map_srid, err)
-                    )
+            if attrs is None:
+                attrs = {}
 
-        context = self.build_attrs(
-            attrs,
-            name=name,
-            module='geodjango_%s' % name.replace('-', '_'),  # JS-safe
-            serialized=self.serialize(value),
-            geom_type=gdal.OGRGeomType(self.attrs['geom_type']),
-            STATIC_URL=settings.STATIC_URL,
-            LANGUAGE_BIDI=translation.get_language_bidi(),
-        )
-        return loader.render_to_string(self.template_name, context)
+            build_attrs_kwargs = {
+                'name': name,
+                'module': 'geodjango_%s' % name.replace('-', '_'),  # JS-safe
+                'serialized': self.serialize(value),
+                'geom_type': gdal.OGRGeomType(self.attrs['geom_type']),
+                'STATIC_URL': settings.STATIC_URL,
+                'LANGUAGE_BIDI': translation.get_language_bidi(),
+            }
+            build_attrs_kwargs.update(attrs)
+            context.update(self.build_attrs(self.attrs, build_attrs_kwargs))
+            return context
+    else:
+        def render(self, name, value, attrs=None):
+            # If a string reaches here (via a validation error on another
+            # field) then just reconstruct the Geometry.
+            if isinstance(value, six.string_types):
+                value = self.deserialize(value)
+
+            if isinstance(value, dict):
+                value = GEOSGeometry(json.dumps(value), srid=self.map_srid)
+
+            if value:
+                # Check that srid of value and map match
+                if value.srid != self.map_srid:
+                    try:
+                        ogr = value.ogr
+                        ogr.transform(self.map_srid)
+                        value = ogr
+                    except gdal.OGRException as err:
+                        logger.error(
+                            "Error transforming geometry from srid '%s' to srid "
+                            "'%s' (%s)" % (value.srid, self.map_srid, err)
+                        )
+
+            context = self.build_attrs(
+                attrs,
+                name=name,
+                module='geodjango_%s' % name.replace('-', '_'),  # JS-safe
+                serialized=self.serialize(value),
+                geom_type=gdal.OGRGeomType(self.attrs['geom_type']),
+                STATIC_URL=settings.STATIC_URL,
+                LANGUAGE_BIDI=translation.get_language_bidi(),
+            )
+            return loader.render_to_string(self.template_name, context)
 
 
 class GeometryField(forms.Field):
