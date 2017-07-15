@@ -34,7 +34,6 @@ import warnings
 import json
 
 from django.conf import settings
-from django.contrib.gis import gdal
 from django.forms.widgets import Widget
 from django.template import loader
 from django.utils import six
@@ -107,7 +106,7 @@ class BaseGeometryWidget(Widget):
                         ogr = value.ogr
                         ogr.transform(self.map_srid)
                         value = ogr
-                    except gdal.GDALException as err:
+                    except GEOSException as err:
                         logger.error(
                             "Error transforming geometry from srid '%s' to srid '%s' (%s)",
                             value.srid, self.map_srid, err
@@ -120,7 +119,7 @@ class BaseGeometryWidget(Widget):
                 'name': name,
                 'module': 'geodjango_%s' % name.replace('-', '_'),  # JS-safe
                 'serialized': self.serialize(value),
-                'geom_type': gdal.OGRGeomType(self.attrs['geom_type']),
+                'geom_type': OGRGeomType(self.attrs['geom_type']),
                 'STATIC_URL': settings.STATIC_URL,
                 'LANGUAGE_BIDI': translation.get_language_bidi(),
             }
@@ -144,7 +143,7 @@ class BaseGeometryWidget(Widget):
                         ogr = value.ogr
                         ogr.transform(self.map_srid)
                         value = ogr
-                    except gdal.OGRException as err:
+                    except GEOSException as err:
                         logger.error(
                             "Error transforming geometry from srid '%s' to srid "
                             "'%s' (%s)" % (value.srid, self.map_srid, err)
@@ -155,7 +154,7 @@ class BaseGeometryWidget(Widget):
                 name=name,
                 module='geodjango_%s' % name.replace('-', '_'),  # JS-safe
                 serialized=self.serialize(value),
-                geom_type=gdal.OGRGeomType(self.attrs['geom_type']),
+                geom_type=OGRGeomType(self.attrs['geom_type']),
                 STATIC_URL=settings.STATIC_URL,
                 LANGUAGE_BIDI=translation.get_language_bidi(),
             )
@@ -256,3 +255,103 @@ class GeometryField(forms.Field):
         else:
             # Check for change of state of existence
             return bool(initial) != bool(data)
+
+
+if connection.features.gis_enabled:
+    from django.contrib.gis.gdal import OGRGeomType
+else:
+    class OGRGeomType:
+        """
+        Encapsulate OGR Geometry Types.
+        Taken from Django GitHub repository:
+        https://github.com/django/django/commit/5411821e3b8d1427ee63a5914aed1088c04cc1ed
+        """
+
+        wkb25bit = -2147483648
+
+        # Dictionary of acceptable OGRwkbGeometryType s and their string names.
+        _types = {0: 'Unknown',
+                  1: 'Point',
+                  2: 'LineString',
+                  3: 'Polygon',
+                  4: 'MultiPoint',
+                  5: 'MultiLineString',
+                  6: 'MultiPolygon',
+                  7: 'GeometryCollection',
+                  100: 'None',
+                  101: 'LinearRing',
+                  102: 'PointZ',
+                  1 + wkb25bit: 'Point25D',
+                  2 + wkb25bit: 'LineString25D',
+                  3 + wkb25bit: 'Polygon25D',
+                  4 + wkb25bit: 'MultiPoint25D',
+                  5 + wkb25bit: 'MultiLineString25D',
+                  6 + wkb25bit: 'MultiPolygon25D',
+                  7 + wkb25bit: 'GeometryCollection25D',
+                  }
+        # Reverse type dictionary, keyed by lower-case of the name.
+        _str_types = {v.lower(): k for k, v in _types.items()}
+
+        def __init__(self, type_input):
+            "Figure out the correct OGR Type based upon the input."
+            if isinstance(type_input, OGRGeomType):
+                num = type_input.num
+            elif isinstance(type_input, str):
+                type_input = type_input.lower()
+                if type_input == 'geometry':
+                    type_input = 'unknown'
+                num = self._str_types.get(type_input)
+                if num is None:
+                    raise GEOSException('Invalid OGR String Type "%s"' % type_input)
+            elif isinstance(type_input, int):
+                if type_input not in self._types:
+                    raise GEOSException('Invalid OGR Integer Type: %d' % type_input)
+                num = type_input
+            else:
+                raise TypeError('Invalid OGR input type given.')
+
+                # Setting the OGR geometry type number.
+            self.num = num
+
+        def __str__(self):
+            "Return the value of the name property."
+            return self.name
+
+        def __eq__(self, other):
+            """
+            Do an equivalence test on the OGR type with the given
+            other OGRGeomType, the short-hand string, or the integer.
+            """
+            if isinstance(other, OGRGeomType):
+                return self.num == other.num
+            elif isinstance(other, str):
+                return self.name.lower() == other.lower()
+            elif isinstance(other, int):
+                return self.num == other
+            else:
+                return False
+
+        @property
+        def name(self):
+            "Return a short-hand string form of the OGR Geometry type."
+            return self._types[self.num]
+
+        @property
+        def django(self):
+            "Return the Django GeometryField for this OGR Type."
+            s = self.name.replace('25D', '')
+            if s in ('LinearRing', 'None'):
+                return None
+            elif s == 'Unknown':
+                s = 'Geometry'
+            elif s == 'PointZ':
+                s = 'Point'
+            return s + 'Field'
+
+        def to_multi(self):
+            """
+            Transform Point, LineString, Polygon, and their 25D equivalents
+            to their Multi... counterpart.
+            """
+            if self.name.startswith(('Point', 'LineString', 'Polygon')):
+                self.num += 3
