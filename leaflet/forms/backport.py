@@ -96,7 +96,6 @@ class BaseGeometryWidget(Widget):
 
     if LooseVersion(get_version()) >= LooseVersion('1.11'):
         def get_context(self, name, value, attrs):
-            logger.error("WAS HERE");
             context = super().get_context(name, value, attrs)
             # If a string reaches here (via a validation error on another
             # field) then just reconstruct the Geometry.
